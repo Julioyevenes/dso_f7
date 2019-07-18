@@ -1,0 +1,7 @@
+Preprocessor(defines): STM32F7XX       USE_HAL_DRIVER
+		       STM32F769xx
+
+Exclusion(files): Libraries/STM32F7xx_HAL_Driver/src/stm32f7xx_hal_msp_template.c
+		  Libraries/STM32F7xx_HAL_Driver/src/stm32f7xx_hal_timebase_rtc_alarm_template.c
+		  Libraries/STM32F7xx_HAL_Driver/src/stm32f7xx_hal_timebase_rtc_wakeup_template.c
+		  Libraries/STM32F7xx_HAL_Driver/src/stm32f7xx_hal_timebase_tim_template.c
