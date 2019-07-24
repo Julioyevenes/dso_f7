@@ -51,21 +51,27 @@
   */
 
 /* Private typedef -----------------------------------------------------------*/
+typedef enum
+{
+	CREATE_DSO = 0,
+	DISPLAY_DSO
+} SCREEN_STATES;
+
 /* Private define ------------------------------------------------------------*/
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
-__IO DWORD tick = 0;
+__IO DWORD 							tick = 0;
 
 /* ADC handler declaration */
 ADC_HandleTypeDef    				AdcHandle;
 
-// DSO sample variable
-WORD								DSOSample;
+/* DMA2D handler declaration */
+DMA2D_HandleTypeDef 				hdma2d;
 
 /**
   * @brief   GOL variables
   */
-SCREEN_STATES screenState = CREATE_DSO; 	// current state of main state machine
+SCREEN_STATES screenState = 		CREATE_DSO; 	// current state of main state machine
 
 /* Private function prototypes -----------------------------------------------*/
 static void SystemClock_Config(void);
@@ -121,7 +127,7 @@ int main(void)
   ADC_Config();
 
   /* Start the conversion process */
-  HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &DSOSample, 1);
+  HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, DSO_BUFFER_SIZE);
 
   /* Infinite loop */
   while (1)
@@ -439,8 +445,8 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
   hdma_adc.Init.Direction = DMA_PERIPH_TO_MEMORY;
   hdma_adc.Init.PeriphInc = DMA_PINC_DISABLE;
   hdma_adc.Init.MemInc = DMA_MINC_ENABLE;
-  hdma_adc.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
-  hdma_adc.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+  hdma_adc.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+  hdma_adc.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
   hdma_adc.Init.Mode = DMA_CIRCULAR;
   hdma_adc.Init.Priority = DMA_PRIORITY_HIGH;
   hdma_adc.Init.FIFOMode = DMA_FIFOMODE_DISABLE;

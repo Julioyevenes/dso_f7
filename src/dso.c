@@ -29,11 +29,11 @@
 #include "main.h"
 
 /* Private types ------------------------------------------------------------*/
-typedef enum _DSO_STATES
+typedef enum _DSO_STATE
 {
     DSO_SAMPLE,
     DSO_DISPLAY
-} DSO_STATES;
+} DSO_STATE;
 
 typedef enum _DSO_DRAW_STATE
 {
@@ -43,58 +43,58 @@ typedef enum _DSO_DRAW_STATE
 	DSO_STATE_HORLINE
 } DSO_DRAW_STATE;
 
+typedef enum _BUFFER_STATE
+{
+	BUFFER_OFFSET_NONE = 0,
+	BUFFER_OFFSET_HALF,
+	BUFFER_OFFSET_FULL,
+} BUFFER_STATE;
+
+typedef struct _BufferTypeDef
+{
+	WORD 		*rptr;
+	WORD 		*wptr;
+	WORD 		len;
+	WORD 		pos;
+
+	BUFFER_STATE buffstate;
+} BufferTypeDef;
+
+typedef struct _DSO_HandleTypeDef
+{
+	DSO_STATE 		DsoState;
+	DSO_DRAW_STATE 	DsoDrawState;
+	BufferTypeDef 	DsoBuffer;
+} DSO_HandleTypeDef;
+
 /* Private constants --------------------------------------------------------*/
 #define GR_CLR_GRID                 LIGHTGRAY
 #define GR_CLR_BACKGROUND           BLACK
 #define GR_CLR_POINTS               BRIGHTGREEN
 
-#define DSO_DISPLAY_DELAY           40
+#define DSO_DISPLAY_DELAY           1
 
-// Dimensions for DSO graph area
-#define DSO_ORIGIN_X    			0
-#define DSO_ORIGIN_Y    			0   
-
-#define DSO_PANEL_LEFT   			DSO_ORIGIN_X
-#define DSO_PANEL_RIGHT  			DSO_ORIGIN_X + GetMaxX()
-#define DSO_PANEL_TOP    			DSO_ORIGIN_Y
-#define DSO_PANEL_BOTTOM 			DSO_ORIGIN_Y + GetMaxY()
-
-// Graph area borders
-#define GR_LEFT     				(DSO_PANEL_LEFT + GOL_EMBOSS_SIZE)
-#define GR_RIGHT    				(DSO_PANEL_RIGHT - GOL_EMBOSS_SIZE)
-#define GR_TOP      				(DSO_PANEL_TOP + GOL_EMBOSS_SIZE)
-#define GR_BOTTOM   				(DSO_PANEL_BOTTOM - GOL_EMBOSS_SIZE)
-
-// Scanning window size
-#define DSO_WINDOW_SIZE 			8
-
-// DSO data circular buffer size
-#define DSO_BUFFER_SIZE 			(GR_RIGHT - GR_LEFT)
-
-#define DSO_DELAY					1
+#define LCD_LAYER0_ADD				((uint32_t)0xC0000000)
+#define LCD_LAYER1_ADD				((uint32_t)0xC0500000)
+#define LCD_RENDER_ADD				((uint32_t)0xC0200000)
 
 /* Private macro ------------------------------------------------------------*/
 #define WAIT_UNTIL_FINISH(x)    	while(!x)
 	
 /* Private variables --------------------------------------------------------*/
-// style scheme for DSO
 GOL_SCHEME              			*dsoScheme;
 
-// DSO data circular buffer
-SHORT                       		dsoBuffer[DSO_BUFFER_SIZE];
+DSO_HandleTypeDef 					hdso = {DSO_SAMPLE, DSO_STATE_SET, 0};
 
-// Temporary buffer for graph
-SHORT                       		tempBuffer[10];
-
-// DSO scan/calculation states
-DSO_STATES                  		dsoStates = DSO_SAMPLE;
-
-// DSO sample variable
-extern WORD							DSOSample;
+WORD 								adcBuffer[DSO_BUFFER_SIZE];
+WORD 								dsoBuffer[DSO_BUFFER_SIZE];
 
 /* Private function prototypes ----------------------------------------------*/
-void DSO_Graph(void);
-WORD DSO_GetSamples(WORD number);
+void DSO_Graph(WORD *data, WORD len, WORD pos);
+void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y);
+void DSO_LCDClear(DWORD dst, DWORD color);
+void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight);
+void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight);
 
 /**
   * @brief  
@@ -103,36 +103,41 @@ WORD DSO_GetSamples(WORD number);
   */
 WORD DSO_Create(void)
 {
-    static DSO_DRAW_STATE	state = DSO_STATE_SET;
     static SHORT    		pos;
 
-    switch(state)
+    switch(hdso.DsoDrawState)
     {
         case DSO_STATE_SET:
 		
 			// Free memory for the objects in the previous linked list and start new list to display
 			GOLFree();
 
-			// initialize the screen	
+			// initialize the dso buffer handler
+			hdso.DsoBuffer.rptr = (WORD *) &adcBuffer;
+			hdso.DsoBuffer.wptr = (WORD *) &dsoBuffer;
+			hdso.DsoBuffer.len = DSO_BUFFER_SIZE;
+			hdso.DsoBuffer.pos = 0;
+			hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+
+			// initialize the screen
+			DMA2D_Init(GR_RIGHT, GR_BOTTOM);
+
 			SetColor(GR_CLR_BACKGROUND);
 			ClearDevice();		
 
             // set parameters for panel
-            GOLPanelDraw
-            (
-                DSO_PANEL_LEFT,
-                DSO_PANEL_TOP,
-                DSO_PANEL_RIGHT,
-                DSO_PANEL_BOTTOM,
-                0,
-                GR_CLR_BACKGROUND,
-                dsoScheme->EmbossDkColor,
-                dsoScheme->EmbossLtColor,
-                NULL,
-                GOL_EMBOSS_SIZE
-            );
+            GOLPanelDraw(	DSO_PANEL_LEFT,
+            				DSO_PANEL_TOP,
+							DSO_PANEL_RIGHT,
+							DSO_PANEL_BOTTOM,
+							0,
+							GR_CLR_BACKGROUND,
+							dsoScheme->EmbossDkColor,
+							dsoScheme->EmbossLtColor,
+							NULL,
+							GOL_EMBOSS_SIZE);
 
-            state = DSO_STATE_DRAW;     // change state
+            hdso.DsoDrawState = DSO_STATE_DRAW;     // change state
 
             break;
 
@@ -142,7 +147,7 @@ WORD DSO_Create(void)
             SetColor(GR_CLR_GRID);
             SetLineType(DOTTED_LINE);
             pos = GR_LEFT + ((GR_RIGHT - GR_LEFT) >> 3);
-            state = DSO_STATE_VERLINE;  // change state
+            hdso.DsoDrawState = DSO_STATE_VERLINE;  // change state
 
             break;
 
@@ -156,7 +161,7 @@ WORD DSO_Create(void)
             }
 
             pos = GR_TOP + ((GR_BOTTOM - GR_TOP) >> 3);
-            state = DSO_STATE_HORLINE;  // change state
+            hdso.DsoDrawState = DSO_STATE_HORLINE;  // change state
 
             break;
 
@@ -171,7 +176,7 @@ WORD DSO_Create(void)
 
             SetLineType(SOLID_LINE);
 
-            state = DSO_STATE_SET;      // change to initial state
+            hdso.DsoDrawState = DSO_STATE_SET;      // change to initial state
             return (1);                 // drawing is done
     }	
 
@@ -197,29 +202,50 @@ WORD DSO_DrawCallback(void)
 {
     static DWORD    prevTick = 0;
 
-	switch(dsoStates)
+	switch(hdso.DsoState)
 	{
-        case DSO_SAMPLE:
-            if((tick - prevTick) > DSO_DELAY)
-            {
-				if(DSO_GetSamples(DSO_WINDOW_SIZE))
-					DSO_Graph(); // redraw graph
-						
-                prevTick = tick;
-            }
+		case DSO_SAMPLE:
+			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_HALF)
+			{
+				DSO_Graph(	hdso.DsoBuffer.wptr,
+							hdso.DsoBuffer.len/2,
+							0);
 
-            break;
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+			}
 
-        case DSO_DISPLAY:
-            if((tick - prevTick) > DSO_DISPLAY_DELAY)
-            {
-                prevTick = tick;
-                dsoStates = DSO_SAMPLE;
-            }
+			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_FULL)
+			{
+				DSO_Graph(	hdso.DsoBuffer.wptr + hdso.DsoBuffer.len/4,
+							hdso.DsoBuffer.len/2,
+							hdso.DsoBuffer.len/2);
 
-            break;			
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+
+				DMA2D_CopyBuffer(	(uint32_t *) LCD_RENDER_ADD,
+									(uint32_t *) LCD_LAYER1_ADD,
+									GR_LEFT,
+									GR_TOP,
+									GR_RIGHT,
+									GR_BOTTOM);
+
+				hdso.DsoState = DSO_DISPLAY;
+			}
+
+			break;
+
+		case DSO_DISPLAY:
+			if((tick - prevTick) > DSO_DISPLAY_DELAY)
+			{
+				DSO_LCDClear(LCD_RENDER_ADD, GR_CLR_BACKGROUND);
+
+				prevTick = tick;
+				hdso.DsoState = DSO_SAMPLE;
+			}
+
+			break;
 	}
-	
+
 	return (1);
 }
 
@@ -228,134 +254,16 @@ WORD DSO_DrawCallback(void)
   * @param  
   * @retval 
   */
-void DSO_Graph(void)
+void DSO_Graph(WORD *data, WORD len, WORD pos)
 {
-    SHORT           x, y;
-    static SHORT    sy = 0;
-    static SHORT    tsy = 0;
-    SHORT           ey;
-    static SHORT    *ptr = dsoBuffer;
-    static SHORT    pos = 0;
-    SHORT           counter;
-    SHORT           *pTemp;
-    SHORT           temp;
+	while(len--)
+	{
+		pos++;
 
-    // remove graph
-    SetColor(GR_CLR_BACKGROUND);
+		DSO_LCDLayerPutPixel(LCD_RENDER_ADD, GR_CLR_POINTS, GR_LEFT + pos, *data);
 
-    pTemp = ptr;
-    temp = pos;
-
-    for(x = 0; x < DSO_WINDOW_SIZE; x++)
-    {
-        ey = *ptr++;
-        pos++;
-
-        if(ey > sy)
-        {
-            for(y = sy + GR_TOP; y < ey + GR_TOP + 1; y++)
-                PutPixel(GR_LEFT + pos, y);
-        }
-        else
-        {
-            for(y = ey + GR_TOP; y < sy + GR_TOP + 1; y++)
-                PutPixel(GR_LEFT + pos, y);
-        }
-
-        if(ptr == (dsoBuffer + DSO_BUFFER_SIZE))
-        {
-            ptr = dsoBuffer;
-            pos = 0;
-        }
-
-        sy = ey;
-    }
-
-    // copy new data from temporary buffer
-    ptr = pTemp;
-    pos = temp;
-
-    for(counter = 0; counter < DSO_WINDOW_SIZE; counter++)
-    {
-        *ptr++ = tempBuffer[counter];
-        pos++;
-        if(ptr == (dsoBuffer + DSO_BUFFER_SIZE))
-        {
-            ptr = dsoBuffer;
-            pos = 0;
-        }
-    }
-
-    // draw graph
-    SetColor(GR_CLR_POINTS);
-
-    ptr = pTemp;
-    pos = temp;
-
-    for(x = 0; x < DSO_WINDOW_SIZE; x++)
-    {
-        ey = *ptr++;
-        pos++;
-
-        if(ey > tsy)
-        {
-            for(y = tsy + GR_TOP; y < ey + GR_TOP + 1; y++)
-                PutPixel(GR_LEFT + pos, y);
-        }
-        else
-        {
-            for(y = ey + GR_TOP; y < tsy + GR_TOP + 1; y++)
-                PutPixel(GR_LEFT + pos, y);
-        }
-
-        if(ptr == (dsoBuffer + DSO_BUFFER_SIZE))
-        {
-            ptr = dsoBuffer;
-            pos = 0;
-            dsoStates = DSO_DISPLAY;
-        }
-
-        tsy = ey;
-    }
-
-    // draw grid
-    SetColor(LIGHTGRAY);
-    SetLineType(DOTTED_LINE);
-    for(x = GR_LEFT + ((GR_RIGHT - GR_LEFT) >> 3); x < GR_RIGHT; x += (GR_RIGHT - GR_LEFT) >> 3)
-    {
-        if((x >= GR_LEFT + temp) && (x <= GR_LEFT + DSO_WINDOW_SIZE + temp))
-            WAIT_UNTIL_FINISH(Line(x, GR_TOP, x, GR_BOTTOM));
-    }
-
-    for(y = GR_TOP + ((GR_BOTTOM - GR_TOP) >> 3); y < GR_BOTTOM; y += (GR_BOTTOM - GR_TOP) >> 3)
-        WAIT_UNTIL_FINISH(Line(GR_LEFT + temp, y, temp + GR_LEFT + DSO_WINDOW_SIZE, y));
-    SetLineType(SOLID_LINE);	
-}
-
-/**
-  * @brief  
-  * @param  
-  * @retval 
-  */
-WORD DSO_GetSamples(WORD number)
-{
-    static BYTE     counter = 0;
-    volatile SHORT  temp;
-
-    temp = (GR_BOTTOM - GR_TOP) - ((DSOSample * (GR_BOTTOM - GR_TOP)) >> 12);
-
-    if((temp + GR_TOP) > GR_BOTTOM)
-        temp = GR_BOTTOM - GR_TOP;
-
-    tempBuffer[counter++] = temp;
-
-    if(counter >= number)
-    {
-        counter = 0;
-        return (1);
-    }
-
-    return (0);
+		data++;
+	}
 }
 
 /**
@@ -374,4 +282,128 @@ void DSO_InitStyleScheme(GOL_SCHEME *pScheme)
     pScheme->TextColor1 = BRIGHTBLUE;
     pScheme->TextColor0 = RGB565CONVERT(0xFF, 0xBB, 0x4C);
     pScheme->TextColorDisabled = RGB565CONVERT(0xB8, 0xB9, 0xBC);
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y)
+{
+	*(__IO uint16_t*) (dst + (2*(y*GetMaxX() + x))) = color;
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void DSO_LCDClear(DWORD dst, DWORD color)
+{
+	WORD x, y;
+
+	for(y = 0 ; y < GetMaxY() ; y++)
+	{
+		memset(dst + y*GetMaxX()*2, color, GetMaxX()*2);
+	}
+}
+
+/**
+  * @brief  Initialize the DMA2D in memory to memory with PFC.
+  * @param  ImageWidth: image width
+  * @param  ImageHeight: image Height
+  * @retval None
+  */
+void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight)
+{
+	/* Init DMA2D */
+	/* Configure the DMA2D Mode, Color Mode and output offset */
+	hdma2d.Init.Mode          = DMA2D_M2M_PFC;
+	hdma2d.Init.ColorMode     = DMA2D_OUTPUT_RGB565;
+	hdma2d.Init.OutputOffset  = GetMaxX() - ImageWidth;
+	hdma2d.Init.AlphaInverted = DMA2D_REGULAR_ALPHA;  /* No Output Alpha Inversion*/
+	hdma2d.Init.RedBlueSwap   = DMA2D_RB_REGULAR;     /* No Output Red & Blue swap */
+
+	/* DMA2D Callbacks Configuration */
+	hdma2d.XferCpltCallback  	= NULL;
+
+	/* Foreground Configuration */
+	hdma2d.LayerCfg[1].AlphaMode = DMA2D_REPLACE_ALPHA;
+	hdma2d.LayerCfg[1].InputAlpha = 0xFF;
+	hdma2d.LayerCfg[1].InputColorMode = DMA2D_INPUT_RGB565;
+	hdma2d.LayerCfg[1].InputOffset = 0;
+	hdma2d.LayerCfg[1].RedBlueSwap = DMA2D_RB_REGULAR; /* No ForeGround Red/Blue swap */
+	hdma2d.LayerCfg[1].AlphaInverted = DMA2D_REGULAR_ALPHA; /* No ForeGround Alpha inversion */
+
+	hdma2d.Instance          = DMA2D;
+
+	/* DMA2D Initialization */
+	HAL_DMA2D_Init(&hdma2d);
+	HAL_DMA2D_ConfigLayer(&hdma2d, 1);
+}
+
+/**
+  * @brief  Copy the Decoded image to the display Frame buffer.
+  * @param  pSrc: Pointer to source buffer
+  * @param  pDst: Pointer to destination buffer
+  * @param  ImageWidth: image width
+  * @param  ImageHeight: image Height
+  * @retval None
+  */
+void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight)
+{
+	HAL_DMA2D_Start_IT(&hdma2d, pSrc, pDst + (2*(yPos*GetMaxX() + xPos)), ImageWidth, ImageHeight);
+}
+
+/**
+  * @brief  Regular conversion complete callback in non blocking mode
+  * @param  hadc: pointer to a ADC_HandleTypeDef structure that contains
+  *         the configuration information for the specified ADC.
+  * @retval None
+  */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+	volatile WORD len = hdso.DsoBuffer.len/2;
+	volatile WORD *sptr = hdso.DsoBuffer.rptr + len/2;
+	volatile WORD *dptr = hdso.DsoBuffer.wptr + len/2;
+
+	while(len--)
+	{
+		*dptr = (GR_BOTTOM - GR_TOP) - ((*sptr * (GR_BOTTOM - GR_TOP)) >> 12);
+
+		if((*dptr + GR_TOP) > GR_BOTTOM)
+			*dptr = GR_BOTTOM - GR_TOP;
+
+		sptr++;
+		dptr++;
+	}
+
+	hdso.DsoBuffer.buffstate = BUFFER_OFFSET_FULL;
+}
+
+/**
+  * @brief  Regular conversion half DMA transfer callback in non blocking mode
+  * @param  hadc: pointer to a ADC_HandleTypeDef structure that contains
+  *         the configuration information for the specified ADC.
+  * @retval None
+  */
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+{
+	volatile WORD len = hdso.DsoBuffer.len/2;
+	volatile WORD *sptr = hdso.DsoBuffer.rptr;
+	volatile WORD *dptr = hdso.DsoBuffer.wptr;
+
+	while(len--)
+	{
+		*dptr = (GR_BOTTOM - GR_TOP) - ((*sptr * (GR_BOTTOM - GR_TOP)) >> 12);
+
+		if((*dptr + GR_TOP) > GR_BOTTOM)
+			*dptr = GR_BOTTOM - GR_TOP;
+
+		sptr++;
+		dptr++;
+	}
+
+	hdso.DsoBuffer.buffstate = BUFFER_OFFSET_HALF;
 }

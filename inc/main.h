@@ -44,19 +44,12 @@
 #include "GenericTypeDefs.h"
 
 /* Exported types ------------------------------------------------------------*/
-typedef enum
-{
-	CREATE_DSO = 0,
-	DISPLAY_DSO
-} SCREEN_STATES;
-
 /* Exported constants --------------------------------------------------------*/
 /* Exported macro ------------------------------------------------------------*/
 /* Exported variables --------------------------------------------------------*/
-extern ADC_HandleTypeDef AdcHandle;
-extern __IO DWORD  tick;
-extern SCREEN_STATES screenState; 	// current state of main state machine
-extern WORD	DSOSample;
+extern ADC_HandleTypeDef 	AdcHandle;
+extern DMA2D_HandleTypeDef 	hdma2d;
+extern __IO DWORD  			tick;
 
 /* Exported functions ------------------------------------------------------- */
 

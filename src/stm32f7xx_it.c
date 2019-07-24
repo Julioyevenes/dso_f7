@@ -55,6 +55,7 @@
 /* Private variables ---------------------------------------------------------*/
 extern __IO DWORD tick;
 extern ADC_HandleTypeDef AdcHandle;
+extern DMA2D_HandleTypeDef hdma2d;
 
 /* Private function prototypes -----------------------------------------------*/
 /* Private functions ---------------------------------------------------------*/
@@ -179,6 +180,26 @@ void SysTick_Handler(void)
 void DMA2_Stream0_IRQHandler(void)
 {
   HAL_DMA_IRQHandler(AdcHandle.DMA_Handle);
+}
+
+/**
+  * @brief  This function handles ADC interrupt request.
+  * @param  None
+  * @retval None
+  */
+void ADC_IRQHandler(void)
+{
+  HAL_ADC_IRQHandler(&AdcHandle);
+}
+
+/**
+  * @brief  This function handles DMA2D interrupt request.
+  * @param  None
+  * @retval None
+  */
+void DMA2D_IRQHandler(void)
+{
+  HAL_DMA2D_IRQHandler(&hdma2d);
 }
 
 /**

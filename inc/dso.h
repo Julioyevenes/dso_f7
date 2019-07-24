@@ -38,9 +38,28 @@
 
 /* Exported types ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
+// Dimensions for DSO graph area
+#define DSO_ORIGIN_X    			0
+#define DSO_ORIGIN_Y    			0
+
+#define DSO_PANEL_LEFT   			DSO_ORIGIN_X
+#define DSO_PANEL_RIGHT  			DSO_ORIGIN_X + GetMaxX()
+#define DSO_PANEL_TOP    			DSO_ORIGIN_Y
+#define DSO_PANEL_BOTTOM 			DSO_ORIGIN_Y + GetMaxY()
+
+// Graph area borders
+#define GR_LEFT     				(DSO_PANEL_LEFT + GOL_EMBOSS_SIZE)
+#define GR_RIGHT    				(DSO_PANEL_RIGHT - GOL_EMBOSS_SIZE)
+#define GR_TOP      				(DSO_PANEL_TOP + GOL_EMBOSS_SIZE)
+#define GR_BOTTOM   				(DSO_PANEL_BOTTOM - GOL_EMBOSS_SIZE)
+
+// DSO data circular buffer size
+#define DSO_BUFFER_SIZE 			2*(GR_RIGHT - GR_LEFT)
+
 /* Exported macro ------------------------------------------------------------*/
 /* Exported variables --------------------------------------------------------*/
-extern GOL_SCHEME *dsoScheme;
+extern GOL_SCHEME 					*dsoScheme;
+extern WORD 						adcBuffer[DSO_BUFFER_SIZE];
 
 /* Exported functions ------------------------------------------------------- */
 WORD DSO_Create(void);
