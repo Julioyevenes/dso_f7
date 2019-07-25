@@ -54,7 +54,7 @@
 #define GR_BOTTOM   				(DSO_PANEL_BOTTOM - GOL_EMBOSS_SIZE)
 
 // DSO data circular buffer size
-#define DSO_BUFFER_SIZE 			2*(GR_RIGHT - GR_LEFT)
+#define DSO_BUFFER_SIZE 			(GR_RIGHT - GR_LEFT)
 
 /* Exported macro ------------------------------------------------------------*/
 /* Exported variables --------------------------------------------------------*/

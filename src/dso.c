@@ -31,8 +31,11 @@
 /* Private types ------------------------------------------------------------*/
 typedef enum _DSO_STATE
 {
-    DSO_SAMPLE,
-    DSO_DISPLAY
+	DSO_TRIGGER,
+	DSO_SAMPLE,
+	DSO_MATH,
+	DSO_DRAW,
+	DSO_DISPLAY
 } DSO_STATE;
 
 typedef enum _DSO_DRAW_STATE
@@ -78,21 +81,29 @@ typedef struct _DSO_HandleTypeDef
 #define LCD_LAYER1_ADD				((uint32_t)0xC0500000)
 #define LCD_RENDER_ADD				((uint32_t)0xC0200000)
 
+#define DSO_ADC_BITDEPTH			12
+#define DSO_ADC_MAXVALUE 			(1 << DSO_ADC_BITDEPTH)
+
+#define DSO_TRIGGER_SAMPLES  		(DSO_BUFFER_SIZE >> 8)
+#define DSO_TRIGGER_TOLERANCE 		(DSO_ADC_MAXVALUE >> 4)
+
 /* Private macro ------------------------------------------------------------*/
 #define WAIT_UNTIL_FINISH(x)    	while(!x)
 	
 /* Private variables --------------------------------------------------------*/
 GOL_SCHEME              			*dsoScheme;
 
-DSO_HandleTypeDef 					hdso = {DSO_SAMPLE, DSO_STATE_SET, 0};
+DSO_HandleTypeDef 					hdso = {DSO_TRIGGER, DSO_STATE_SET, 0};
 
 WORD 								adcBuffer[DSO_BUFFER_SIZE];
 WORD 								dsoBuffer[DSO_BUFFER_SIZE];
 
 /* Private function prototypes ----------------------------------------------*/
-void DSO_Graph(WORD *data, WORD len, WORD pos);
-void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y);
-void DSO_LCDClear(DWORD dst, DWORD color);
+void DSO_Process(void);
+void DSO_RescaleBuffer(WORD *Src, WORD *Dst, WORD len, WORD x1, WORD x2, WORD y1, WORD y2);
+void DSO_Plot(WORD *data, WORD len, WORD pos);
+void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth);
+void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight);
 void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight);
 void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight);
 
@@ -120,7 +131,7 @@ WORD DSO_Create(void)
 			hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
 
 			// initialize the screen
-			DMA2D_Init(GR_RIGHT, GR_BOTTOM);
+			DMA2D_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
 			SetColor(GR_CLR_BACKGROUND);
 			ClearDevice();		
@@ -200,35 +211,81 @@ WORD DSO_MsgCallback(WORD objMsg, OBJ_HEADER *pObj, GOL_MSG *pMsg)
   */
 WORD DSO_DrawCallback(void)
 {
+	DSO_Process();
+
+	return (1);
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void DSO_Process(void)
+{
     static DWORD    prevTick = 0;
 
 	switch(hdso.DsoState)
 	{
+		case DSO_TRIGGER:
+			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_NONE)
+				HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, DSO_TRIGGER_SAMPLES);
+
+			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_FULL)
+			{
+				if(	(adcBuffer[0] < (DSO_ADC_MAXVALUE >> 1) - DSO_TRIGGER_TOLERANCE) \
+					&& (adcBuffer[DSO_TRIGGER_SAMPLES - 1] > (DSO_ADC_MAXVALUE >> 1) + DSO_TRIGGER_TOLERANCE))
+				{
+					hdso.DsoState = DSO_SAMPLE;
+				}
+
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+			}
+
+			break;
+
 		case DSO_SAMPLE:
+			HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, DSO_BUFFER_SIZE);
+
+			hdso.DsoState = DSO_MATH;
+
+			break;
+
+		case DSO_MATH:
+			DSO_RescaleBuffer(	hdso.DsoBuffer.rptr,
+								hdso.DsoBuffer.wptr,
+								hdso.DsoBuffer.len,
+								0,
+								DSO_ADC_MAXVALUE,
+								GR_BOTTOM,
+								GR_TOP);
+
+			hdso.DsoState = DSO_DRAW;
+
+			break;
+
+		case DSO_DRAW:
 			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_HALF)
 			{
-				DSO_Graph(	hdso.DsoBuffer.wptr,
-							hdso.DsoBuffer.len/2,
-							0);
-
 				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
 			}
 
 			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_FULL)
 			{
-				DSO_Graph(	hdso.DsoBuffer.wptr + hdso.DsoBuffer.len/4,
-							hdso.DsoBuffer.len/2,
-							hdso.DsoBuffer.len/2);
+				DSO_Plot(	hdso.DsoBuffer.wptr,
+							hdso.DsoBuffer.len,
+							0);
 
-				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+				while(hdma2d.State != HAL_DMA2D_STATE_READY);
 
 				DMA2D_CopyBuffer(	(uint32_t *) LCD_RENDER_ADD,
 									(uint32_t *) LCD_LAYER1_ADD,
-									GR_LEFT,
-									GR_TOP,
-									GR_RIGHT,
-									GR_BOTTOM);
+									0,
+									0,
+									BSP_LCD_GetXSize(),
+									BSP_LCD_GetYSize());
 
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
 				hdso.DsoState = DSO_DISPLAY;
 			}
 
@@ -237,16 +294,33 @@ WORD DSO_DrawCallback(void)
 		case DSO_DISPLAY:
 			if((tick - prevTick) > DSO_DISPLAY_DELAY)
 			{
-				DSO_LCDClear(LCD_RENDER_ADD, GR_CLR_BACKGROUND);
+				DSO_LCDClear(	LCD_RENDER_ADD,
+								GR_CLR_BACKGROUND,
+								GR_RIGHT - GR_LEFT,
+								GR_BOTTOM - GR_TOP);
 
 				prevTick = tick;
-				hdso.DsoState = DSO_SAMPLE;
+				hdso.DsoState = DSO_TRIGGER;
 			}
 
 			break;
 	}
+}
 
-	return (1);
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void DSO_RescaleBuffer(WORD *Src, WORD *Dst, WORD len, WORD x1, WORD x2, WORD y1, WORD y2)
+{
+	while(len--)
+	{
+		*Dst = ((*Src - x1)*(y2 - y1))/(x2 - x1) + y1;
+
+		Src++;
+		Dst++;
+	}
 }
 
 /**
@@ -254,14 +328,17 @@ WORD DSO_DrawCallback(void)
   * @param  
   * @retval 
   */
-void DSO_Graph(WORD *data, WORD len, WORD pos)
+void DSO_Plot(WORD *data, WORD len, WORD pos)
 {
 	while(len--)
 	{
+		DSO_LCDLayerPutPixel(	LCD_RENDER_ADD,
+								GR_CLR_POINTS,
+								GR_LEFT + pos,
+								*data,
+								BSP_LCD_GetXSize());
+
 		pos++;
-
-		DSO_LCDLayerPutPixel(LCD_RENDER_ADD, GR_CLR_POINTS, GR_LEFT + pos, *data);
-
 		data++;
 	}
 }
@@ -289,9 +366,9 @@ void DSO_InitStyleScheme(GOL_SCHEME *pScheme)
   * @param
   * @retval
   */
-void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y)
+void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth)
 {
-	*(__IO uint16_t*) (dst + (2*(y*GetMaxX() + x))) = color;
+	*(__IO uint16_t*) (dst + (2*(y*ImageWidth + x))) = color;
 }
 
 /**
@@ -299,13 +376,13 @@ void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y)
   * @param
   * @retval
   */
-void DSO_LCDClear(DWORD dst, DWORD color)
+void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight)
 {
-	WORD x, y;
+	WORD y;
 
-	for(y = 0 ; y < GetMaxY() ; y++)
+	for(y = 0 ; y < ImageHeight ; y++)
 	{
-		memset(dst + y*GetMaxX()*2, color, GetMaxX()*2);
+		memset(dst + 2*y*ImageWidth, color, 2*ImageWidth);
 	}
 }
 
@@ -321,7 +398,7 @@ void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight)
 	/* Configure the DMA2D Mode, Color Mode and output offset */
 	hdma2d.Init.Mode          = DMA2D_M2M_PFC;
 	hdma2d.Init.ColorMode     = DMA2D_OUTPUT_RGB565;
-	hdma2d.Init.OutputOffset  = GetMaxX() - ImageWidth;
+	hdma2d.Init.OutputOffset  = BSP_LCD_GetXSize() - ImageWidth;
 	hdma2d.Init.AlphaInverted = DMA2D_REGULAR_ALPHA;  /* No Output Alpha Inversion*/
 	hdma2d.Init.RedBlueSwap   = DMA2D_RB_REGULAR;     /* No Output Red & Blue swap */
 
@@ -353,7 +430,7 @@ void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight)
   */
 void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight)
 {
-	HAL_DMA2D_Start_IT(&hdma2d, pSrc, pDst + (2*(yPos*GetMaxX() + xPos)), ImageWidth, ImageHeight);
+	HAL_DMA2D_Start_IT(&hdma2d, pSrc, pDst + (2*(yPos*BSP_LCD_GetXSize() + xPos)), ImageWidth, ImageHeight);
 }
 
 /**
@@ -364,21 +441,6 @@ void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yP
   */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
-	volatile WORD len = hdso.DsoBuffer.len/2;
-	volatile WORD *sptr = hdso.DsoBuffer.rptr + len/2;
-	volatile WORD *dptr = hdso.DsoBuffer.wptr + len/2;
-
-	while(len--)
-	{
-		*dptr = (GR_BOTTOM - GR_TOP) - ((*sptr * (GR_BOTTOM - GR_TOP)) >> 12);
-
-		if((*dptr + GR_TOP) > GR_BOTTOM)
-			*dptr = GR_BOTTOM - GR_TOP;
-
-		sptr++;
-		dptr++;
-	}
-
 	hdso.DsoBuffer.buffstate = BUFFER_OFFSET_FULL;
 }
 
@@ -390,20 +452,5 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   */
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 {
-	volatile WORD len = hdso.DsoBuffer.len/2;
-	volatile WORD *sptr = hdso.DsoBuffer.rptr;
-	volatile WORD *dptr = hdso.DsoBuffer.wptr;
-
-	while(len--)
-	{
-		*dptr = (GR_BOTTOM - GR_TOP) - ((*sptr * (GR_BOTTOM - GR_TOP)) >> 12);
-
-		if((*dptr + GR_TOP) > GR_BOTTOM)
-			*dptr = GR_BOTTOM - GR_TOP;
-
-		sptr++;
-		dptr++;
-	}
-
 	hdso.DsoBuffer.buffstate = BUFFER_OFFSET_HALF;
 }

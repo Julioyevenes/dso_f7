@@ -126,9 +126,6 @@ int main(void)
   /* Configure the ADC peripheral */
   ADC_Config();
 
-  /* Start the conversion process */
-  HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, DSO_BUFFER_SIZE);
-
   /* Infinite loop */
   while (1)
   {
@@ -399,7 +396,7 @@ static void ADC_Config(void)
   /* Configure ADC Temperature Sensor Channel */
   sConfig.Channel = ADC_CHANNEL_6;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   sConfig.Offset = 0;
 
   if (HAL_ADC_ConfigChannel(&AdcHandle, &sConfig) != HAL_OK)
@@ -447,7 +444,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
   hdma_adc.Init.MemInc = DMA_MINC_ENABLE;
   hdma_adc.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
   hdma_adc.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
-  hdma_adc.Init.Mode = DMA_CIRCULAR;
+  hdma_adc.Init.Mode = DMA_NORMAL;
   hdma_adc.Init.Priority = DMA_PRIORITY_HIGH;
   hdma_adc.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
   hdma_adc.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_HALFFULL;
