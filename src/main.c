@@ -68,6 +68,9 @@ ADC_HandleTypeDef    				AdcHandle;
 /* DMA2D handler declaration */
 DMA2D_HandleTypeDef 				hdma2d;
 
+/* I2C handler declaration */
+extern I2C_HandleTypeDef 			hI2cAudioHandler;
+
 /**
   * @brief   GOL variables
   */
@@ -223,70 +226,75 @@ WORD GOLDrawCallback()
   */
 static void TouchGetMsg(GOL_MSG* pMsg)
 {
-   static SHORT prevX = -1;
-   static SHORT prevY = -1;
-   SHORT x, y;
-   TS_StateTypeDef TS_State;
+	static SHORT prevX = -1;
+	static SHORT prevY = -1;
+	SHORT x, y;
+	TS_StateTypeDef TS_State;
 
-   BSP_TS_GetState(&TS_State);
+	if( HAL_I2C_GetState(&hI2cAudioHandler) == HAL_I2C_STATE_READY )
+	{
+		BSP_TS_GetState(&TS_State);
+	}
+	else
+	{
+		TS_State.touchDetected = 0;
+	}
 
-   if (TS_State.touchDetected == 0)
-   {
-      x = -1;
-      y = -1;
-   }
-   else
-   {
-      x = TS_State.touchX[0];
-      y = TS_State.touchY[0];
-   }
+	if (TS_State.touchDetected == 0)
+	{
+		x = -1;
+		y = -1;
+	}
+	else
+	{
+		x = TS_State.touchX[0];
+		y = TS_State.touchY[0];
+	}
 
-   pMsg->type = TYPE_TOUCHSCREEN;
-   pMsg->uiEvent = EVENT_INVALID;
+	pMsg->type = TYPE_TOUCHSCREEN;
+	pMsg->uiEvent = EVENT_INVALID;
 
-   if ((prevX == x) && (prevY == y) && (x != -1) && (y != -1))
-   {
-      pMsg->uiEvent = EVENT_STILLPRESS;
-      pMsg->param1 = x;
-      pMsg->param2 = y;
-      return;
-   }
+	if ((prevX == x) && (prevY == y) && (x != -1) && (y != -1))
+	{
+		pMsg->uiEvent = EVENT_STILLPRESS;
+		pMsg->param1 = x;
+		pMsg->param2 = y;
+		return;
+	}
 
-   if ((prevX != -1) || (prevY != -1))
-   {
+	if ((prevX != -1) || (prevY != -1))
+	{
+		if ((x != -1) && (y != -1))
+		{
+			pMsg->uiEvent = EVENT_MOVE;
+		}
+		else
+		{
+			pMsg->uiEvent = EVENT_RELEASE;
+			pMsg->param1 = prevX;
+			pMsg->param2 = prevY;
+			prevX = x;
+			prevY = y;
 
-      if ((x != -1) && (y != -1))
-      {
-         pMsg->uiEvent = EVENT_MOVE;
-      }
-      else
-      {
-         pMsg->uiEvent = EVENT_RELEASE;
-         pMsg->param1 = prevX;
-         pMsg->param2 = prevY;
-         prevX = x;
-         prevY = y;
+			return;
+		}
+	}
+	else
+	{
+		if ((x != -1) && (y != -1))
+		{
+			pMsg->uiEvent = EVENT_PRESS;
+		}
+		else
+		{
+			pMsg->uiEvent = EVENT_INVALID;
+		}
+	}
 
-         return;
-      }
-   }
-   else
-   {
-      if ((x != -1) && (y != -1))
-      {
-         pMsg->uiEvent = EVENT_PRESS;
-      }
-      else
-      {
-         pMsg->uiEvent = EVENT_INVALID;
-      }
-
-   }
-
-   pMsg->param1 = x;
-   pMsg->param2 = y;
-   prevX = x;
-   prevY = y;
+	pMsg->param1 = x;
+	pMsg->param2 = y;
+	prevX = x;
+	prevY = y;
 }
 
 /**

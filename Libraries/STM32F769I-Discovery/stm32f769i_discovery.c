@@ -101,8 +101,8 @@ const uint16_t BUTTON_PIN[BUTTONn] = {WAKEUP_BUTTON_PIN };
 const uint16_t BUTTON_IRQn[BUTTONn] = {WAKEUP_BUTTON_EXTI_IRQn };
 
 
-static I2C_HandleTypeDef hI2cAudioHandler = {0};
-static I2C_HandleTypeDef hI2cExtHandler = {0};
+I2C_HandleTypeDef hI2cAudioHandler = {0};
+I2C_HandleTypeDef hI2cExtHandler = {0};
 
 /**
   * @}

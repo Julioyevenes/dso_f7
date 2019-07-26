@@ -43,7 +43,8 @@ typedef enum _DSO_DRAW_STATE
 	DSO_STATE_SET,
 	DSO_STATE_DRAW,
 	DSO_STATE_VERLINE,
-	DSO_STATE_HORLINE
+	DSO_STATE_HORLINE,
+	DSO_STATE_BUTTONS
 } DSO_DRAW_STATE;
 
 typedef enum _BUFFER_STATE
@@ -63,12 +64,29 @@ typedef struct _BufferTypeDef
 	BUFFER_STATE buffstate;
 } BufferTypeDef;
 
+typedef struct _DSO_ADCTypeDef
+{
+	uint32_t Channel;
+	uint32_t Rank;
+	uint32_t SamplingTime;
+	uint32_t Offset;
+} DSO_ADCTypeDef;
+
 typedef struct _DSO_HandleTypeDef
 {
 	DSO_STATE 		DsoState;
 	DSO_DRAW_STATE 	DsoDrawState;
 	BufferTypeDef 	DsoBuffer;
+	DSO_ADCTypeDef  DsoADC;
 } DSO_HandleTypeDef;
+
+typedef struct _DSO_ButtonTypeDef
+{
+	BUTTON  *pBtn;
+	WORD	BtnState;
+	XCHAR	*BtnString;
+	BOOL	BtnSetClr;
+} DSO_ButtonTypeDef;
 
 /* Private constants --------------------------------------------------------*/
 #define GR_CLR_GRID                 LIGHTGRAY
@@ -87,23 +105,51 @@ typedef struct _DSO_HandleTypeDef
 #define DSO_TRIGGER_SAMPLES  		(DSO_BUFFER_SIZE >> 8)
 #define DSO_TRIGGER_TOLERANCE 		(DSO_ADC_MAXVALUE >> 4)
 
+#define ID_BUTTON_A					101
+#define ID_BUTTON_B					102
+#define ID_BUTTON_C					103
+#define ID_BUTTON_D					104
+
+#define NUM_CTRL_BUTTONS 			4
+
+const XCHAR                 		IncTimeStr[] = {'T','i','m','e',' ','+',0};
+const XCHAR                 		DecTimeStr[] = {'T','i','m','e',' ','-',0};
+const XCHAR                 		IncAmpStr[] = {'A','m','p','l',' ','+',0};
+const XCHAR                 		DecAmpStr[] = {'A','m','p','l',' ','-',0};
+
 /* Private macro ------------------------------------------------------------*/
 #define WAIT_UNTIL_FINISH(x)    	while(!x)
 	
 /* Private variables --------------------------------------------------------*/
 GOL_SCHEME              			*dsoScheme;
 
-DSO_HandleTypeDef 					hdso = {DSO_TRIGGER, DSO_STATE_SET, 0};
+DSO_HandleTypeDef 					hdso = {DSO_TRIGGER, DSO_STATE_SET, 0, 0};
 
 WORD 								adcBuffer[DSO_BUFFER_SIZE];
 WORD 								dsoBuffer[DSO_BUFFER_SIZE];
+
+uint32_t							aSamplingTime[] = {	ADC_SAMPLETIME_3CYCLES,
+														ADC_SAMPLETIME_15CYCLES,
+														ADC_SAMPLETIME_28CYCLES,
+														ADC_SAMPLETIME_56CYCLES,
+														ADC_SAMPLETIME_84CYCLES,
+														ADC_SAMPLETIME_112CYCLES,
+														ADC_SAMPLETIME_144CYCLES,
+														ADC_SAMPLETIME_480CYCLES};
+
+uint8_t								iSamplingTime = 0;
+
+DSO_ButtonTypeDef					hbutton[NUM_CTRL_BUTTONS];
 
 /* Private function prototypes ----------------------------------------------*/
 void DSO_Process(void);
 void DSO_RescaleBuffer(WORD *Src, WORD *Dst, WORD len, WORD x1, WORD x2, WORD y1, WORD y2);
 void DSO_Plot(WORD *data, WORD len, WORD pos);
+WORD DSO_CreateCtrlButtons(XCHAR *pTextA, XCHAR *pTextB, XCHAR *pTextC, XCHAR *pTextD);
+void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb);
 void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth);
 void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight);
+void ADC_ChannelConfig(uint32_t Channel, uint32_t Rank, uint32_t SamplingTime, uint32_t Offset);
 void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight);
 void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight);
 
@@ -129,6 +175,12 @@ WORD DSO_Create(void)
 			hdso.DsoBuffer.len = DSO_BUFFER_SIZE;
 			hdso.DsoBuffer.pos = 0;
 			hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+
+			// initialize the dso adc handler
+			hdso.DsoADC.Channel = ADC_CHANNEL_6;
+			hdso.DsoADC.Rank = 1;
+			hdso.DsoADC.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+			hdso.DsoADC.Offset = 0;
 
 			// initialize the screen
 			DMA2D_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
@@ -187,6 +239,37 @@ WORD DSO_Create(void)
 
             SetLineType(SOLID_LINE);
 
+            hdso.DsoDrawState = DSO_STATE_BUTTONS;  // change state
+
+            break;
+
+        case DSO_STATE_BUTTONS:
+            // create the control buttons at the bottom of the screen
+            if(!DSO_CreateCtrlButtons(NULL, NULL, NULL, NULL))
+        		return (0);
+
+            hbutton[0].pBtn = (BUTTON *)GOLFindObject(ID_BUTTON_A);
+            hbutton[0].BtnState = BTN_DISABLED;
+            hbutton[0].BtnString = &DecAmpStr;
+            hbutton[0].BtnSetClr = 0;
+
+            hbutton[1].pBtn = (BUTTON *)GOLFindObject(ID_BUTTON_B);
+            hbutton[1].BtnState = BTN_DISABLED;
+            hbutton[1].BtnString = &IncAmpStr;
+            hbutton[1].BtnSetClr = 0;
+
+            hbutton[2].pBtn = (BUTTON *)GOLFindObject(ID_BUTTON_C);
+            hbutton[2].BtnState = BTN_DISABLED;
+            hbutton[2].BtnString = &DecTimeStr;
+            hbutton[2].BtnSetClr = 0;
+
+            hbutton[3].pBtn = (BUTTON *)GOLFindObject(ID_BUTTON_D);
+            hbutton[3].BtnState = BTN_DISABLED;
+            hbutton[3].BtnString = &IncTimeStr;
+            hbutton[3].BtnSetClr = 0;
+
+            DSO_SetCtrlButtons(&hbutton[0]);
+
             hdso.DsoDrawState = DSO_STATE_SET;      // change to initial state
             return (1);                 // drawing is done
     }	
@@ -201,6 +284,65 @@ WORD DSO_Create(void)
   */
 WORD DSO_MsgCallback(WORD objMsg, OBJ_HEADER *pObj, GOL_MSG *pMsg)
 {
+	switch(GetObjID(pObj))
+	{
+		case ID_BUTTON_A:
+			if(objMsg == BTN_MSG_RELEASED)
+			{
+			}
+
+			return (1);
+
+		case ID_BUTTON_B:
+			if(objMsg == BTN_MSG_RELEASED)
+			{
+			}
+
+			return (1);
+
+		case ID_BUTTON_C:
+			if(objMsg == BTN_MSG_RELEASED)
+			{
+				if(iSamplingTime > 0)
+					iSamplingTime--;
+
+				hdso.DsoADC.SamplingTime = aSamplingTime[iSamplingTime];
+
+				HAL_ADC_Stop_DMA(&AdcHandle);
+
+				ADC_ChannelConfig(	hdso.DsoADC.Channel,
+									hdso.DsoADC.Rank,
+									hdso.DsoADC.SamplingTime,
+									hdso.DsoADC.Offset);
+
+				hdso.DsoState = DSO_TRIGGER;
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+			}
+
+			return (1);
+
+		case ID_BUTTON_D:
+			if(objMsg == BTN_MSG_RELEASED)
+			{
+				if(iSamplingTime < sizeof(aSamplingTime)/4 - 1)
+					iSamplingTime++;
+
+				hdso.DsoADC.SamplingTime = aSamplingTime[iSamplingTime];
+
+				HAL_ADC_Stop_DMA(&AdcHandle);
+
+				ADC_ChannelConfig(	hdso.DsoADC.Channel,
+									hdso.DsoADC.Rank,
+									hdso.DsoADC.SamplingTime,
+									hdso.DsoADC.Offset);
+
+				hdso.DsoState = DSO_TRIGGER;
+				hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
+			}
+
+			return (1);
+	}
+
 	return (1);
 }
 
@@ -366,6 +508,116 @@ void DSO_InitStyleScheme(GOL_SCHEME *pScheme)
   * @param
   * @retval
   */
+WORD DSO_CreateCtrlButtons(XCHAR *pTextA, XCHAR *pTextB, XCHAR *pTextC, XCHAR *pTextD)
+{
+    WORD    state;
+    BUTTON  *pObj;
+
+
+    state = BTN_DRAW;
+    if(pTextA == NULL)
+        state = BTN_DRAW | BTN_DISABLED;
+    pObj = BtnCreate
+    (
+        ID_BUTTON_A,
+        CtrlBtnLeft(0),
+        CtrlBtnTop(),
+        CtrlBtnRight(0),
+        CtrlBtnBottom(),
+        0,
+        state,
+        NULL,
+        pTextA,
+        NULL
+    );
+    if (pObj == NULL)
+        return (0);
+
+    state = BTN_DRAW;
+    if(pTextB == NULL)
+        state = BTN_DRAW | BTN_DISABLED;
+    pObj = BtnCreate
+    (
+        ID_BUTTON_B,
+        CtrlBtnLeft(1),
+        CtrlBtnTop(),
+        CtrlBtnRight(1),
+        CtrlBtnBottom(),
+        0,
+        state,
+        NULL,
+        pTextB,
+        NULL
+    );
+    if (pObj == NULL)
+        return (0);
+
+    state = BTN_DRAW;
+    if(pTextC == NULL)
+        state = BTN_DRAW | BTN_DISABLED;
+    pObj = BtnCreate
+    (
+        ID_BUTTON_C,
+        CtrlBtnLeft(2),
+        CtrlBtnTop(),
+        CtrlBtnRight(2),
+        CtrlBtnBottom(),
+        0,
+        state,
+        NULL,
+        pTextC,
+        NULL
+    );
+    if (pObj == NULL)
+        return (0);
+
+    state = BTN_DRAW;
+    if(pTextD == NULL)
+        state = BTN_DRAW | BTN_DISABLED;
+    pObj = BtnCreate
+    (
+        ID_BUTTON_D,
+        CtrlBtnLeft(3),
+        CtrlBtnTop(),
+        CtrlBtnRight(3),
+        CtrlBtnBottom(),
+        0,
+        state,
+        NULL,
+        pTextD,
+        NULL
+    );
+    if (pObj == NULL)
+        return (0);
+
+    return (1);
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb)
+{
+	uint8_t i;
+
+	for(i = 0 ; i < NUM_CTRL_BUTTONS ; i++)
+	{
+		BtnSetText(hb[i].pBtn, hb[i].BtnString);
+
+		if(hb[i].BtnSetClr)
+			SetState(hb[i].pBtn, hb[i].BtnState);
+		else
+			ClrState(hb[i].pBtn, hb[i].BtnState);
+	}
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
 void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth)
 {
 	*(__IO uint16_t*) (dst + (2*(y*ImageWidth + x))) = color;
@@ -384,6 +636,23 @@ void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight)
 	{
 		memset(dst + 2*y*ImageWidth, color, 2*ImageWidth);
 	}
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
+void ADC_ChannelConfig(uint32_t Channel, uint32_t Rank, uint32_t SamplingTime, uint32_t Offset)
+{
+	ADC_ChannelConfTypeDef sConfig;
+
+  	sConfig.Channel = Channel;
+  	sConfig.Rank = Rank;
+  	sConfig.SamplingTime = SamplingTime;
+  	sConfig.Offset = Offset;
+
+  	HAL_ADC_ConfigChannel(&AdcHandle, &sConfig);
 }
 
 /**

@@ -38,6 +38,14 @@
 
 /* Exported types ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
+#define CTRLBTN_XINDENT         	0
+#define CTRLBTN_HEIGHT          	45
+#define CTRLBTN_WIDTH           	(((BSP_LCD_GetXSize() + 1) - (CTRLBTN_XINDENT * 2)) / 4)
+#define CtrlBtnTop()            	(BSP_LCD_GetYSize() - CTRLBTN_HEIGHT)
+#define CtrlBtnBottom()         	BSP_LCD_GetYSize()
+#define CtrlBtnLeft(column)     	(((column + 1) * CTRLBTN_XINDENT) + (column * CTRLBTN_WIDTH))
+#define CtrlBtnRight(column)    	((column + 1) * (CTRLBTN_XINDENT + CTRLBTN_WIDTH))
+
 // Dimensions for DSO graph area
 #define DSO_ORIGIN_X    			0
 #define DSO_ORIGIN_Y    			0
@@ -45,7 +53,7 @@
 #define DSO_PANEL_LEFT   			DSO_ORIGIN_X
 #define DSO_PANEL_RIGHT  			DSO_ORIGIN_X + GetMaxX()
 #define DSO_PANEL_TOP    			DSO_ORIGIN_Y
-#define DSO_PANEL_BOTTOM 			DSO_ORIGIN_Y + GetMaxY()
+#define DSO_PANEL_BOTTOM 			DSO_ORIGIN_Y + CtrlBtnTop()
 
 // Graph area borders
 #define GR_LEFT     				(DSO_PANEL_LEFT + GOL_EMBOSS_SIZE)
