@@ -38,36 +38,43 @@
 
 /* Exported types ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
-#define CTRLBTN_XINDENT         	0
-#define CTRLBTN_HEIGHT          	45
-#define CTRLBTN_WIDTH           	(((BSP_LCD_GetXSize() + 1) - (CTRLBTN_XINDENT * 2)) / 4)
-#define CtrlBtnTop()            	(BSP_LCD_GetYSize() - CTRLBTN_HEIGHT)
-#define CtrlBtnBottom()         	BSP_LCD_GetYSize()
-#define CtrlBtnLeft(column)     	(((column + 1) * CTRLBTN_XINDENT) + (column * CTRLBTN_WIDTH))
-#define CtrlBtnRight(column)    	((column + 1) * (CTRLBTN_XINDENT + CTRLBTN_WIDTH))
+#define CTRLBTN_XINDENT         			0
+#define CTRLBTN_HEIGHT          			45
+#define CTRLBTN_WIDTH(nButton)      		(((GetMaxX() + 1) - (CTRLBTN_XINDENT * 2)) / nButton)
+#define CtrlBtnTop()            			(GetMaxY() - CTRLBTN_HEIGHT)
+#define CtrlBtnBottom()         			GetMaxY()
+#define CtrlBtnLeft(column, nButton)     	(((column + 1) * CTRLBTN_XINDENT) + (column * CTRLBTN_WIDTH(nButton)))
+#define CtrlBtnRight(column, nButton)    	((column + 1) * (CTRLBTN_XINDENT + CTRLBTN_WIDTH(nButton)))
+
+#define InfoTextIndent         				0
+#define InfoTextWidth(nText)  				(((GetMaxX() + 1) - (InfoTextIndent * 2)) / nText)
+#define InfoTextTop()						0
+#define InfoTextBottom()					InfoTextTop() + GetTextHeight((void *) &GOLFontDefault)
+#define InfoTexLeft(col, nText)     		(((col + 1) * InfoTextIndent) + (col * InfoTextWidth(nText)))
+#define InfoTexRight(col, nText)    		((col + 1) * (InfoTextIndent + InfoTextWidth(nText)))
 
 // Dimensions for DSO graph area
-#define DSO_ORIGIN_X    			0
-#define DSO_ORIGIN_Y    			0
+#define DSO_ORIGIN_X    					0
+#define DSO_ORIGIN_Y    					InfoTextBottom()
 
-#define DSO_PANEL_LEFT   			DSO_ORIGIN_X
-#define DSO_PANEL_RIGHT  			DSO_ORIGIN_X + GetMaxX()
-#define DSO_PANEL_TOP    			DSO_ORIGIN_Y
-#define DSO_PANEL_BOTTOM 			DSO_ORIGIN_Y + CtrlBtnTop()
+#define DSO_PANEL_LEFT   					DSO_ORIGIN_X
+#define DSO_PANEL_RIGHT  					DSO_ORIGIN_X + GetMaxX()
+#define DSO_PANEL_TOP    					DSO_ORIGIN_Y
+#define DSO_PANEL_BOTTOM 					CtrlBtnTop()
 
 // Graph area borders
-#define GR_LEFT     				(DSO_PANEL_LEFT + GOL_EMBOSS_SIZE)
-#define GR_RIGHT    				(DSO_PANEL_RIGHT - GOL_EMBOSS_SIZE)
-#define GR_TOP      				(DSO_PANEL_TOP + GOL_EMBOSS_SIZE)
-#define GR_BOTTOM   				(DSO_PANEL_BOTTOM - GOL_EMBOSS_SIZE)
+#define GR_LEFT     						(DSO_PANEL_LEFT + GOL_EMBOSS_SIZE)
+#define GR_RIGHT    						(DSO_PANEL_RIGHT - GOL_EMBOSS_SIZE)
+#define GR_TOP      						(DSO_PANEL_TOP + GOL_EMBOSS_SIZE)
+#define GR_BOTTOM   						(DSO_PANEL_BOTTOM - GOL_EMBOSS_SIZE)
 
 // DSO data circular buffer size
-#define DSO_BUFFER_SIZE 			(GR_RIGHT - GR_LEFT)
+#define DSO_BUFFER_SIZE 					(GR_RIGHT - GR_LEFT)
 
 /* Exported macro ------------------------------------------------------------*/
 /* Exported variables --------------------------------------------------------*/
-extern GOL_SCHEME 					*dsoScheme;
-extern WORD 						adcBuffer[DSO_BUFFER_SIZE];
+extern GOL_SCHEME 							*dsoScheme;
+extern WORD 								adcBuffer[DSO_BUFFER_SIZE];
 
 /* Exported functions ------------------------------------------------------- */
 WORD DSO_Create(void);
