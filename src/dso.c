@@ -27,6 +27,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "dso.h"
 #include "main.h"
+#include "arm_math.h"
 
 /* Private types ------------------------------------------------------------*/
 typedef enum _DSO_STATE
@@ -59,6 +60,7 @@ typedef struct _BufferTypeDef
 {
 	WORD 		*rptr;
 	WORD 		*wptr;
+	WORD 		*cptr;
 	WORD 		len;
 	WORD 		pos;
 
@@ -67,35 +69,36 @@ typedef struct _BufferTypeDef
 
 typedef struct _DSO_ADCTypeDef
 {
-	uint32_t Channel;
-	uint32_t Rank;
-	uint32_t SamplingTime;
-	uint32_t Offset;
+	DWORD Channel;
+	DWORD Rank;
+	DWORD SamplingTime;
+	DWORD Offset;
 } DSO_ADCTypeDef;
 
 typedef struct _DSO_ReScaleTypeDef
 {
-	int16_t	x1;
-	int16_t	x2;
-	int16_t	y1;
-	int16_t	y2;
+	SHORT	x1;
+	SHORT	x2;
+	SHORT	y1;
+	SHORT	y2;
 } DSO_ReScaleTypeDef;
 
 typedef struct _DSO_TriggerTypeDef
 {
-	uint16_t	nSamples;
-	uint16_t	vThreshold;
+	WORD	nSamples;
+	WORD	vThreshold;
 } DSO_TriggerTypeDef;
 
 typedef struct _DSO_MathOutTypeDef
 {
-	float XScale;
-	float YScale;
-	float MaxY;
-	float MinY;
-	float Freq;
-	float RiseTime;
-	float FallTime;
+	float 						XScale;
+	float 						YScale;
+	float 						MaxY;
+	float 						MinY;
+	float 						Freq;
+
+	arm_rfft_instance_q15 		hrfft;
+	BufferTypeDef				fftBuffer;
 } DSO_MathOutTypeDef;
 
 typedef struct _DSO_HandleTypeDef
@@ -139,25 +142,31 @@ typedef struct _DSO_TextTypeDef
 #define GR_CLR_GRID                 LIGHTGRAY
 #define GR_CLR_BACKGROUND           BLACK
 #define GR_CLR_POINTS               BRIGHTGREEN
+#define GR_CLR_FFT 					BRIGHTMAGENTA
 
 #define DSO_HOR_GRID 				8
 #define DSO_VER_GRID 				8
 
 #define DSO_DISPLAY_DELAY           1
 
-#define LCD_LAYER0_ADD				((uint32_t)0xC0000000)
-#define LCD_LAYER1_ADD				((uint32_t)0xC0500000)
-#define LCD_RENDER_ADD				((uint32_t)0xC0200000)
+#define LCD_LAYER0_ADD				((DWORD)0xC0000000)
+#define LCD_LAYER1_ADD				((DWORD)0xC0500000)
+#define LCD_RENDER_ADD				((DWORD)0xC0200000)
 
 #define DSO_ADC_MAXVOLT				3300
 #define DSO_ADC_BITDEPTH			12
-#define DSO_ADC_MAXVALUE 			(1 << DSO_ADC_BITDEPTH)
+#define DSO_ADC_MAXVAL 				(1 << DSO_ADC_BITDEPTH)
 #define DSO_ADC_CLOCK				36
 
 #define DSO_RESCALER_STEP			((GR_BOTTOM - GR_TOP) >> 4)
 
 #define DSO_TRIGGER_HOR_STEP		(DSO_BUFFER_SIZE >> 8)
-#define DSO_TRIGGER_VER_STEP		(DSO_ADC_MAXVALUE >> 6)
+#define DSO_TRIGGER_VER_STEP		(DSO_ADC_MAXVAL >> 6)
+
+#define DSO_FFT_MAXVAL 				(1 << 10)
+#define DSO_FFT_FREQ_OFFSET 		1
+
+#define DSO_NUM_BUFFERS				2
 
 #define ID_BUTTON_A					101
 #define ID_BUTTON_B					102
@@ -211,9 +220,11 @@ GOL_SCHEME              			*dsoScheme;
 DSO_HandleTypeDef 					hdso = {DSO_TRIGGER, DSO_STATE_SET, 0, 0, 0, 0, 0};
 
 WORD 								adcBuffer[DSO_BUFFER_SIZE];
-WORD 								dsoBuffer[DSO_BUFFER_SIZE];
+WORD 								dsoBuffer[DSO_NUM_BUFFERS][DSO_BUFFER_SIZE];
 
-uint32_t							aSTime[] = {	ADC_SAMPLETIME_3CYCLES,
+q15_t 								fftBuffer[2 * DSO_BUFFER_SIZE];
+
+DWORD								aSTime[] = {	ADC_SAMPLETIME_3CYCLES,
 													ADC_SAMPLETIME_15CYCLES,
 													ADC_SAMPLETIME_28CYCLES,
 													ADC_SAMPLETIME_56CYCLES,
@@ -222,9 +233,9 @@ uint32_t							aSTime[] = {	ADC_SAMPLETIME_3CYCLES,
 													ADC_SAMPLETIME_144CYCLES,
 													ADC_SAMPLETIME_480CYCLES};
 
-uint32_t							aAdcCycles[] = {3, 15, 28, 56, 84, 112, 144, 480};
+DWORD								aAdcCycles[] = {3, 15, 28, 56, 84, 112, 144, 480};
 
-uint16_t 							aBtnId[] = {	ID_BUTTON_A,
+WORD 								aBtnId[] = {	ID_BUTTON_A,
 													ID_BUTTON_B,
 													ID_BUTTON_C,
 													ID_BUTTON_D,
@@ -233,13 +244,13 @@ uint16_t 							aBtnId[] = {	ID_BUTTON_A,
 													ID_BUTTON_G,
 													ID_BUTTON_H};
 
-uint16_t 							aTextId[] = {	ID_STATICTEXT1,
+WORD 								aTextId[] = {	ID_STATICTEXT1,
 													ID_STATICTEXT2,
 													ID_STATICTEXT3,
 													ID_STATICTEXT4,
 													ID_STATICTEXT5};
 
-uint8_t								iSTime = 0;
+BYTE								iSTime = 0;
 
 DSO_ButtonTypeDef					hButton[NUM_CTRL_BUTTONS];
 DSO_TextTypeDef 					hText[NUM_STATICTEXT];
@@ -249,18 +260,20 @@ CHAR 								TempStr[NUM_STATICTEXT][STRING_SIZE];
 /* Private function prototypes ----------------------------------------------*/
 void DSO_Process(void);
 void DSO_ReScaleBuffer(WORD *Src, WORD *Dst, WORD len, SHORT x1, SHORT x2, SHORT y1, SHORT y2);
+void DSO_BufferFFT(DSO_HandleTypeDef *hdso);
 SHORT DSO_GetMax(WORD *Src, WORD len, WORD Offset);
 SHORT DSO_GetMin(WORD *Src, WORD len, WORD Offset);
-void DSO_Plot(WORD *data, WORD len, WORD pos);
-WORD DSO_CreateCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb, uint16_t *BtnId, XCHAR *BtnStr, uint8_t StrSize);
-WORD DSO_CreateText(DSO_TextTypeDef *ht, uint8_t nt, uint16_t *TextId, XCHAR *TextStr, uint8_t StrSize);
-void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb);
-void DSO_SetText(DSO_TextTypeDef *ht, uint8_t nt);
+DWORD DSO_GetFreq(DSO_HandleTypeDef *hdso, WORD Offset);
+void DSO_Plot(WORD *data, WORD len, WORD pos, DWORD color);
+WORD DSO_CreateCtrlButtons(DSO_ButtonTypeDef *hb, BYTE nb, WORD *BtnId, XCHAR *BtnStr, BYTE StrSize);
+WORD DSO_CreateText(DSO_TextTypeDef *ht, BYTE nt, WORD *TextId, XCHAR *TextStr, BYTE StrSize);
+void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb, BYTE nb);
+void DSO_SetText(DSO_TextTypeDef *ht, BYTE nt);
 void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth);
 void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight);
-void ADC_ChannelConfig(uint32_t Channel, uint32_t Rank, uint32_t SamplingTime, uint32_t Offset);
-void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight);
-void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight);
+void ADC_ChannelConfig(DWORD Channel, DWORD Rank, DWORD SamplingTime, DWORD Offset);
+void DMA2D_Init(DWORD ImageWidth, DWORD ImageHeight);
+void DMA2D_CopyBuffer(DWORD *pSrc, DWORD *pDst, WORD xPos, WORD yPos, WORD ImageWidth, WORD ImageHeight);
 
 /**
   * @brief  
@@ -280,7 +293,8 @@ WORD DSO_Create(void)
 
 			// initialize the dso buffer handler
 			hdso.DsoBuffer.rptr = (WORD *) &adcBuffer;
-			hdso.DsoBuffer.wptr = (WORD *) &dsoBuffer;
+			hdso.DsoBuffer.wptr = (WORD *) &dsoBuffer[0][0];
+			hdso.DsoBuffer.cptr = NULL;
 			hdso.DsoBuffer.len = DSO_BUFFER_SIZE;
 			hdso.DsoBuffer.pos = 0;
 			hdso.DsoBuffer.buffstate = BUFFER_OFFSET_NONE;
@@ -293,13 +307,22 @@ WORD DSO_Create(void)
 
 			// initialize the dso rescaler handler
 			hdso.DsoReScale.x1 = 0;
-			hdso.DsoReScale.x2 = DSO_ADC_MAXVALUE;
+			hdso.DsoReScale.x2 = DSO_ADC_MAXVAL;
 			hdso.DsoReScale.y1 = GR_BOTTOM;
 			hdso.DsoReScale.y2 = GR_TOP;
 
 			// initialize the dso trigger handler
 			hdso.DsoTrigger.nSamples = DSO_TRIGGER_HOR_STEP;
 			hdso.DsoTrigger.vThreshold = DSO_TRIGGER_VER_STEP;
+
+			// initialize the dso math handler
+			hdso.DsoMathOut.fftBuffer.rptr = (WORD *) &adcBuffer;
+			hdso.DsoMathOut.fftBuffer.wptr = (WORD *) &dsoBuffer[1][0];
+			hdso.DsoMathOut.fftBuffer.cptr = (WORD *) &fftBuffer;
+			hdso.DsoMathOut.fftBuffer.len = DSO_BUFFER_SIZE;
+			hdso.DsoMathOut.fftBuffer.pos = 0;
+			hdso.DsoMathOut.fftBuffer.buffstate = BUFFER_OFFSET_NONE;
+			arm_rfft_init_q15(&hdso.DsoMathOut.hrfft, DSO_BUFFER_SIZE, 0, 1);
 
 			// initialize the screen
 			DMA2D_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
@@ -328,7 +351,7 @@ WORD DSO_Create(void)
                 return (0);             // drawing is not completed
             SetColor(GR_CLR_GRID);
             SetLineType(DOTTED_LINE);
-            pos = GR_LEFT + ((GR_RIGHT - GR_LEFT) >> 3);
+            pos = GR_LEFT + ((GR_RIGHT - GR_LEFT) / DSO_HOR_GRID);
             hdso.DsoDrawState = DSO_STATE_VERLINE;  // change state
 
             break;
@@ -339,10 +362,10 @@ WORD DSO_Create(void)
                 if(IsDeviceBusy())
                     return (0);         // drawing is not completed
                 WAIT_UNTIL_FINISH(Line(pos, GR_TOP, pos, GR_BOTTOM));
-                pos += (GR_RIGHT - GR_LEFT) >> 3;
+                pos += (GR_RIGHT - GR_LEFT) / DSO_HOR_GRID;
             }
 
-            pos = GR_TOP + ((GR_BOTTOM - GR_TOP) >> 3);
+            pos = GR_TOP + ((GR_BOTTOM - GR_TOP) / DSO_VER_GRID);
             hdso.DsoDrawState = DSO_STATE_HORLINE;  // change state
 
             break;
@@ -353,7 +376,7 @@ WORD DSO_Create(void)
                 if(IsDeviceBusy())
                     return (0);         // drawing is not completed
                 WAIT_UNTIL_FINISH(Line(GR_LEFT, pos, GR_RIGHT, pos));
-                pos += (GR_BOTTOM - GR_TOP) >> 3;
+                pos += (GR_BOTTOM - GR_TOP) / DSO_VER_GRID;
             }
 
             SetLineType(SOLID_LINE);
@@ -492,7 +515,7 @@ WORD DSO_MsgCallback(WORD objMsg, OBJ_HEADER *pObj, GOL_MSG *pMsg)
 		case ID_BUTTON_H:
 			if(objMsg == BTN_MSG_RELEASED)
 			{
-				if(hdso.DsoTrigger.vThreshold < DSO_ADC_MAXVALUE >> 1)
+				if(hdso.DsoTrigger.vThreshold < DSO_ADC_MAXVAL >> 1)
 					hdso.DsoTrigger.vThreshold += DSO_TRIGGER_VER_STEP;
 			}
 
@@ -527,12 +550,12 @@ void DSO_Process(void)
 	{
 		case DSO_TRIGGER:
 			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_NONE)
-				HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, hdso.DsoTrigger.nSamples);
+				HAL_ADC_Start_DMA(&AdcHandle, (DWORD*) &adcBuffer, hdso.DsoTrigger.nSamples);
 
 			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_FULL)
 			{
-				if(	(adcBuffer[0] < (DSO_ADC_MAXVALUE >> 1) - hdso.DsoTrigger.vThreshold) \
-					&& (adcBuffer[hdso.DsoTrigger.nSamples - 1] > (DSO_ADC_MAXVALUE >> 1) + hdso.DsoTrigger.vThreshold))
+				if(	(adcBuffer[0] < (DSO_ADC_MAXVAL >> 1) - hdso.DsoTrigger.vThreshold) \
+					&& (adcBuffer[hdso.DsoTrigger.nSamples - 1] > (DSO_ADC_MAXVAL >> 1) + hdso.DsoTrigger.vThreshold))
 				{
 					hdso.DsoState = DSO_SAMPLE;
 				}
@@ -543,7 +566,7 @@ void DSO_Process(void)
 			break;
 
 		case DSO_SAMPLE:
-			HAL_ADC_Start_DMA(&AdcHandle, (uint32_t*) &adcBuffer, DSO_BUFFER_SIZE);
+			HAL_ADC_Start_DMA(&AdcHandle, (DWORD*) &adcBuffer, DSO_BUFFER_SIZE);
 
 			hdso.DsoState = DSO_MATH;
 
@@ -558,20 +581,33 @@ void DSO_Process(void)
 								hdso.DsoReScale.y1,
 								hdso.DsoReScale.y2);
 
-			hdso.DsoMathOut.XScale = (2 * (aAdcCycles[iSTime] + 12) * (DSO_BUFFER_SIZE/DSO_HOR_GRID)) / DSO_ADC_CLOCK;
+			DSO_BufferFFT(&hdso);
+
+			DSO_ReScaleBuffer(	hdso.DsoMathOut.fftBuffer.cptr,
+								hdso.DsoMathOut.fftBuffer.wptr,
+								hdso.DsoMathOut.fftBuffer.len,
+								0,
+								DSO_FFT_MAXVAL,
+								GR_BOTTOM,
+								GR_TOP);
+
+			hdso.DsoMathOut.XScale = (2 * (aAdcCycles[iSTime] + 12) * ((GR_RIGHT - GR_LEFT)/DSO_HOR_GRID)) / DSO_ADC_CLOCK;
 			hdso.DsoMathOut.YScale = ((DSO_ADC_MAXVOLT/DSO_VER_GRID) * (GR_BOTTOM - GR_TOP)) / (hdso.DsoReScale.y1 - hdso.DsoReScale.y2);
-			hdso.DsoMathOut.MaxY = (DSO_ADC_MAXVOLT * DSO_GetMax(hdso.DsoBuffer.rptr, DSO_BUFFER_SIZE, DSO_ADC_MAXVALUE >> 1)) / DSO_ADC_MAXVALUE;
-			hdso.DsoMathOut.MinY = (DSO_ADC_MAXVOLT * DSO_GetMin(hdso.DsoBuffer.rptr, DSO_BUFFER_SIZE ,DSO_ADC_MAXVALUE >> 1)) / DSO_ADC_MAXVALUE;
+			hdso.DsoMathOut.MaxY = (DSO_ADC_MAXVOLT * DSO_GetMax(hdso.DsoBuffer.rptr, DSO_BUFFER_SIZE, DSO_ADC_MAXVAL >> 1)) / DSO_ADC_MAXVAL;
+			hdso.DsoMathOut.MinY = (DSO_ADC_MAXVOLT * DSO_GetMin(hdso.DsoBuffer.rptr, DSO_BUFFER_SIZE ,DSO_ADC_MAXVAL >> 1)) / DSO_ADC_MAXVAL;
+			hdso.DsoMathOut.Freq = DSO_GetFreq(&hdso, DSO_FFT_FREQ_OFFSET);
 
 			sprintf(&TempStr[0][0], "%3.0f [us]\0", hdso.DsoMathOut.XScale);
 			sprintf(&TempStr[1][0], "%3.0f [mV]\0", hdso.DsoMathOut.YScale);
 			sprintf(&TempStr[2][0], "%3.0f [mV]\0", hdso.DsoMathOut.MaxY);
 			sprintf(&TempStr[3][0], "%3.0f [mV]\0", hdso.DsoMathOut.MinY);
+			sprintf(&TempStr[4][0], "%3.0f [Hz]\0", hdso.DsoMathOut.Freq);
 
 			DSO_TEXT_SET_STRING(hText[0], &TempStr[0][0]);
 			DSO_TEXT_SET_STRING(hText[1], &TempStr[1][0]);
 			DSO_TEXT_SET_STRING(hText[2], &TempStr[2][0]);
 			DSO_TEXT_SET_STRING(hText[3], &TempStr[3][0]);
+			DSO_TEXT_SET_STRING(hText[4], &TempStr[4][0]);
 
 			DSO_SetText(&hText[0], NUM_STATICTEXT);
 
@@ -588,13 +624,19 @@ void DSO_Process(void)
 			if(hdso.DsoBuffer.buffstate == BUFFER_OFFSET_FULL)
 			{
 				DSO_Plot(	hdso.DsoBuffer.wptr,
-							hdso.DsoBuffer.len,
-							0);
+							GR_RIGHT - GR_LEFT,
+							0,
+							GR_CLR_POINTS);
+
+				DSO_Plot(	hdso.DsoMathOut.fftBuffer.wptr,
+							GR_RIGHT - GR_LEFT,
+							0,
+							GR_CLR_FFT);
 
 				while(hdma2d.State != HAL_DMA2D_STATE_READY);
 
-				DMA2D_CopyBuffer(	(uint32_t *) LCD_RENDER_ADD,
-									(uint32_t *) LCD_LAYER1_ADD,
+				DMA2D_CopyBuffer(	(DWORD *) LCD_RENDER_ADD,
+									(DWORD *) LCD_LAYER1_ADD,
 									0,
 									0,
 									BSP_LCD_GetXSize(),
@@ -643,6 +685,32 @@ void DSO_ReScaleBuffer(WORD *Src, WORD *Dst, WORD len, SHORT x1, SHORT x2, SHORT
   * @param
   * @retval
   */
+void DSO_BufferFFT(DSO_HandleTypeDef *hdso)
+{
+	WORD 	i;
+	q15_t 	InBuffer[hdso->DsoMathOut.fftBuffer.len];
+	q15_t 	OutBuffer[2 * hdso->DsoMathOut.fftBuffer.len];
+
+	for(i = 0 ; i < hdso->DsoMathOut.fftBuffer.len ; i++)
+		InBuffer[i] = (q15_t) hdso->DsoMathOut.fftBuffer.rptr[i];
+
+	arm_rfft_q15(	&(hdso->DsoMathOut.hrfft),
+					(q15_t *) &InBuffer,
+					(q15_t *) &OutBuffer);
+
+	arm_abs_q15(	(q15_t *) &OutBuffer,
+					(q15_t *) &OutBuffer,
+					hdso->DsoMathOut.fftBuffer.len);
+
+	for(i = 0 ; i < 2 * hdso->DsoMathOut.fftBuffer.len ; i++)
+		hdso->DsoMathOut.fftBuffer.cptr[i] = (WORD) OutBuffer[i];
+}
+
+/**
+  * @brief
+  * @param
+  * @retval
+  */
 SHORT DSO_GetMax(WORD *Src, WORD len, WORD Offset)
 {
 	SHORT ret = Offset;
@@ -679,17 +747,46 @@ SHORT DSO_GetMin(WORD *Src, WORD len, WORD Offset)
 }
 
 /**
+  * @brief
+  * @param
+  * @retval
+  */
+DWORD DSO_GetFreq(DSO_HandleTypeDef *hdso, WORD Offset)
+{
+	WORD	i, idx;
+	WORD	len = hdso->DsoMathOut.fftBuffer.len;
+	WORD	*Src = &(hdso->DsoMathOut.fftBuffer.cptr[Offset]);
+	SHORT	temp = 0;
+	DWORD	freq;
+
+	for(i = 0 ; i < len - Offset ; i++)
+	{
+		if(*Src > temp)
+		{
+			temp = *Src;
+			idx = i/2;
+		}
+
+		Src++;
+	}
+
+	freq = (1000000 * DSO_ADC_CLOCK * idx) / (2 * (aAdcCycles[iSTime] + 12) * len);
+
+	return(freq);
+}
+
+/**
   * @brief  
   * @param  
   * @retval 
   */
-void DSO_Plot(WORD *data, WORD len, WORD pos)
+void DSO_Plot(WORD *data, WORD len, WORD pos, DWORD color)
 {
 	while(len--)
 	{
 		if((*data > GR_TOP) && (*data < GR_BOTTOM))
 			DSO_LCDLayerPutPixel(	LCD_RENDER_ADD,
-									GR_CLR_POINTS,
+									color,
 									GR_LEFT + pos,
 									*data,
 									BSP_LCD_GetXSize());
@@ -722,9 +819,9 @@ void DSO_InitStyleScheme(GOL_SCHEME *pScheme)
   * @param
   * @retval
   */
-WORD DSO_CreateCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb, uint16_t *BtnId, XCHAR *BtnStr, uint8_t StrSize)
+WORD DSO_CreateCtrlButtons(DSO_ButtonTypeDef *hb, BYTE nb, WORD *BtnId, XCHAR *BtnStr, BYTE StrSize)
 {
-	uint8_t i;
+	BYTE i;
 
 	for(i = 0 ; i < nb ; i++)
 	{
@@ -764,9 +861,9 @@ WORD DSO_CreateCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb, uint16_t *BtnId, X
   * @param
   * @retval
   */
-WORD DSO_CreateText(DSO_TextTypeDef *ht, uint8_t nt, uint16_t *TextId, XCHAR *TextStr, uint8_t StrSize)
+WORD DSO_CreateText(DSO_TextTypeDef *ht, BYTE nt, WORD *TextId, XCHAR *TextStr, BYTE StrSize)
 {
-	uint8_t i;
+	BYTE i;
 
 	for(i = 0 ; i < nt ; i++)
 	{
@@ -801,9 +898,9 @@ WORD DSO_CreateText(DSO_TextTypeDef *ht, uint8_t nt, uint16_t *TextId, XCHAR *Te
   * @param
   * @retval
   */
-void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb)
+void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb, BYTE nb)
 {
-	uint8_t i;
+	BYTE i;
 
 	for(i = 0 ; i < nb ; i++)
 	{
@@ -821,9 +918,9 @@ void DSO_SetCtrlButtons(DSO_ButtonTypeDef *hb, uint8_t nb)
   * @param
   * @retval
   */
-void DSO_SetText(DSO_TextTypeDef *ht, uint8_t nt)
+void DSO_SetText(DSO_TextTypeDef *ht, BYTE nt)
 {
-	uint8_t i;
+	BYTE i;
 
 	for(i = 0 ; i < nt ; i++)
 	{
@@ -843,7 +940,7 @@ void DSO_SetText(DSO_TextTypeDef *ht, uint8_t nt)
   */
 void DSO_LCDLayerPutPixel(DWORD dst, DWORD color, WORD x, WORD y, WORD ImageWidth)
 {
-	*(__IO uint16_t*) (dst + (2*(y*ImageWidth + x))) = color;
+	*(__IO WORD*) (dst + (2*(y*ImageWidth + x))) = color;
 }
 
 /**
@@ -866,7 +963,7 @@ void DSO_LCDClear(DWORD dst, DWORD color, WORD ImageWidth, WORD ImageHeight)
   * @param
   * @retval
   */
-void ADC_ChannelConfig(uint32_t Channel, uint32_t Rank, uint32_t SamplingTime, uint32_t Offset)
+void ADC_ChannelConfig(DWORD Channel, DWORD Rank, DWORD SamplingTime, DWORD Offset)
 {
 	ADC_ChannelConfTypeDef sConfig;
 
@@ -884,7 +981,7 @@ void ADC_ChannelConfig(uint32_t Channel, uint32_t Rank, uint32_t SamplingTime, u
   * @param  ImageHeight: image Height
   * @retval None
   */
-void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight)
+void DMA2D_Init(DWORD ImageWidth, DWORD ImageHeight)
 {
 	/* Init DMA2D */
 	/* Configure the DMA2D Mode, Color Mode and output offset */
@@ -920,7 +1017,7 @@ void DMA2D_Init(uint32_t ImageWidth, uint32_t ImageHeight)
   * @param  ImageHeight: image Height
   * @retval None
   */
-void DMA2D_CopyBuffer(uint32_t *pSrc, uint32_t *pDst, uint16_t xPos, uint16_t yPos, uint16_t ImageWidth, uint16_t ImageHeight)
+void DMA2D_CopyBuffer(DWORD *pSrc, DWORD *pDst, WORD xPos, WORD yPos, WORD ImageWidth, WORD ImageHeight)
 {
 	HAL_DMA2D_Start_IT(&hdma2d, pSrc, pDst + (2*(yPos*BSP_LCD_GetXSize() + xPos)), ImageWidth, ImageHeight);
 }
